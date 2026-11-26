@@ -1,18 +1,10 @@
 # rchrome
 
-一条命令，让本机的 Claude Code 直接操控远程主机上的 Chrome。
+一条命令，让本机的 Claude Code 直接操控远程主机上的 Chrome（或 Safari）。
 
-**English TL;DR** — Drive a Chrome running on another machine from your local Claude Code with two commands: `rchrome serve` on the remote box, `rchrome connect <addr>` locally. No accounts, no public IP, no port forwarding, no root. Built on Chrome's DevTools Protocol plus [tailcat](https://github.com/tailscale/tailcat) (Tailscale's open-source data plane: WireGuard + NAT traversal + relay fallback) embedded as a Go library. Full design in [SPEC.md](SPEC.md).
+**English TL;DR** — Drive a Chrome running on another machine from your local Claude Code with two commands: `rchrome serve` on the remote box, `rchrome connect <addr>` locally. No accounts, no public IP, no port forwarding, no root. Chrome's DevTools Protocol over [tailcat](https://github.com/tailscale/tailcat) (Tailscale's open-source data plane: WireGuard + NAT traversal + relay fallback) embedded in a single Go binary. Safari via Apple's `safaridriver --mcp`. Design in [SPEC.md](SPEC.md).
 
-## 它解决什么
-
-Claude Code 自带的 Claude in Chrome 扩展可以跨机器，但要求在另一台机器上登录同一个 Claude 账号。云浏览器要账号要付费，而且不是你自己的那台机器。手工方案（开调试端口 + SSH 隧道 + 改 MCP 配置）步骤多，两台机器还经常不在同一网络。
-
-rchrome 把这些压成两条命令。
-
-## 安装
-
-一行命令，不需要 Git、Go 或编译。两台机器都是这一行：
+## 安装（一行，不需要 Git / Go / 编译）
 
 ```bash
 # macOS / Linux
@@ -29,64 +21,100 @@ irm https://raw.githubusercontent.com/ceeyang/rchrome/main/scripts/install.ps1 |
 ```bash
 curl -fsSL https://raw.githubusercontent.com/ceeyang/rchrome/main/scripts/install.sh | sh -s -- serve
 ```
+```powershell
+$env:RCHROME_RUN='serve'; irm https://raw.githubusercontent.com/ceeyang/rchrome/main/scripts/install.ps1 | iex
+```
 
-本机侧另需 Node.js 20+（官方 chrome-devtools-mcp 通过 npx 运行）；远程主机不需要。
+脚本从 GitHub Releases 下载对应平台的单文件二进制，sha256 校验后放进 PATH。本机侧另需 Node.js 20+（官方 chrome-devtools-mcp 通过 npx 运行），远程主机不需要。
 
 ## 用法
 
 远程主机（Windows / macOS / Linux）：
 
-```bash
-rchrome serve
-# 🐈 地址（持久，重启不变）
-#    tcomFwWCCcjS5nKNqAod034nWoJZW0LZqDhhC8U_dKdnDRYQ8uNGFpGQEu
+```
+$ rchrome serve
+🐈 Chrome/142.0.7444.59 已启动   调试端口 9222   中继 Tokyo
+🐈 地址（持久，重启不变）
+   tcpGFwWCCw3PY83iIXXiEknBhGp-8nonNJz…
+
+在本机运行：
+   rchrome connect tcpGFwWCCw3PY83iIXXiEknBhGp-8nonNJz…
+
+Ctrl+C 结束（会一起关闭 Chrome）
 ```
 
 本机：
 
-```bash
-rchrome connect tcomFwWCCcjS5nKNqAod034nWoJZW0LZqDhhC8U_dKdnDRYQ8uNGFpGQEu
-# ✓ 已连上远程 Chrome   Chrome/142.0.7444.59   Windows
-# ✓ 已注册到 Claude Code   名称 remote-chrome
+```
+$ rchrome connect tcpGFwWCCw3PY83iIXXiEknBhGp-8nonNJz… --name win-office --label "办公室的 Windows"
+✓ 已连上远程浏览器   Chrome/142.0.7444.59   Windows
+✓ 已注册到 Claude Code   名称 win-office（devtools）   备注 办公室的 Windows
+本机身份 nodekey:8195…e43d   （远程可用 rchrome serve --allow <此值> 只放行这台机器）
+
+新开一个 Claude Code 会话，对它说「用 办公室的 Windows 打开 example.com 并截图」试试。
 ```
 
-之后新开一个 Claude Code 会话，让它「打开 example.com 并截图」。每次会话由 Claude Code 自动拉起 `rchrome mcp`，它自己建隧道、起官方 chrome-devtools-mcp，会话结束自动断开。远程只要 `rchrome serve` 还在跑即可。
+之后不用再碰 rchrome。每次新开 Claude Code 会话，它自动拉起 `rchrome mcp`，后者自己建隧道、起官方 chrome-devtools-mcp，会话结束自动断开。远程只要 `rchrome serve` 还在跑即可。
 
-**Claude 不需要任何提示就能认出它。** 工具列表里会出现 `remote-chrome__*` 一组工具，MCP 握手说明里写明「这是远程主机 Windows 上的 Chrome，不是本机浏览器」。想用 Playwright 的工具集就 `connect --backend playwright`，`--backend both` 两套都要。
+## Claude 怎么认出它、怎么区分多台机器
 
-远程是只有 Safari 的 Mac：
+- `--name` 是 MCP 名称，也是工具前缀：`win-office__take_screenshot`、`mac-home__navigate_page`。
+- `--label` 是备注，连同远程系统和浏览器版本一起注入 MCP 握手说明。Claude 看到的是「这组工具操作的是远程主机『办公室的 Windows』（Windows, Chrome/142）上的浏览器，不是本机浏览器」，所以即使本机同时有 Claude in Chrome 扩展和本地 Playwright，它也能选对。
+- 多台远程主机：各 `serve` 一次、各 `connect` 一次，用不同 `--name` 即可。`rchrome list` 查看。
+- 远程 `serve` 没在跑时，工具仍在列表里；Claude 调用时会收到「远程主机的 rchrome serve 未运行」并原话转告你。
+
+## 后端
+
+| `connect --backend` | 本机跑的 MCP | 适用 |
+|---|---|---|
+| `devtools`（默认） | Google 官方 chrome-devtools-mcp | Chrome / Edge / Chromium |
+| `playwright` | 微软 @playwright/mcp（`--cdp-endpoint`） | Chrome / Edge / Chromium |
+| `both` | 两个都注册（`<name>` 与 `<name>-pw`） | 想两套工具集都要 |
+| `safari` | 直通远程 Mac 的 `safaridriver --mcp` | 远程只有 Safari（27+） |
+
+Playwright 连不上真 Safari（它的 webkit 是自带内核），所以 Safari 走 Apple 自己的 MCP：
 
 ```bash
-rchrome serve --safari                 # 远程 Mac，走 Apple 官方 safaridriver --mcp（Safari 27+）
-rchrome connect tc… --backend safari   # 本机
+rchrome serve --safari                      # 远程 Mac；先在 Safari → 开发 里勾「允许远程自动化和外部代理」
+rchrome connect tc… --backend safari        # 本机
 ```
 
-Playwright 连不上真 Safari（它的 webkit 是自带内核，`--backend playwright` 只对 Chrome / Edge 有效），所以 Safari 走 Apple 自己的 MCP。
+## 子命令
+
+```
+rchrome serve     [--port 9222] [--headless] [--no-launch] [--keep-chrome] [--allow nodekey:…] [--safari] [--key new]
+rchrome connect   <tc地址> [--name N] [--label 备注] [--backend devtools|playwright|both|safari] [--scope user|project|local] [--no-register]
+rchrome list                                   已连接的远程主机
+rchrome forward   [tc地址] [--local-port 9222]  纯端口转发，给 Playwright 脚本 connectOverCDP 用
+rchrome doctor                                 检查 Chrome / Node / claude CLI / 各远程是否可达
+rchrome keygen                                 打印本机身份，给远程 serve --allow 用
+```
 
 ## 原理
 
 ```
-远程 Chrome --remote-debugging-port=9222 (127.0.0.1)
+远程 Chrome --remote-debugging-port (127.0.0.1)
     ▲
-rchrome serve ── tailcat Server ══ WireGuard 隧道 ══ tailcat Client ── rchrome mcp
-                                                                         └─ npx chrome-devtools-mcp --browserUrl http://127.0.0.1:9222
-                                                                              ▲
-                                                                         Claude Code
+rchrome serve ── tailcat Server ══ WireGuard 隧道（打洞，失败走 DERP 中继）══ tailcat Client ── rchrome mcp
+                                                                                            ├─ 127.0.0.1:9222 本地监听
+                                                                                            └─ npx chrome-devtools-mcp --browserUrl http://127.0.0.1:9222
+                                                                                                 ▲ stdio（握手时注入「这是远程浏览器」说明）
+                                                                                            Claude Code
 ```
 
-不自造浏览器协议：远程端是 Chrome 原生 CDP，本机端复用 Google 官方 chrome-devtools-mcp 或微软 @playwright/mcp。rchrome 只负责把远程的 9222 安全地搬到本机的 127.0.0.1。
-
-## 状态
-
-当前仓库只有完整规格 [SPEC.md](SPEC.md)：命令、flag、文案、退出码、各平台 Chrome 查找、tailcat 嵌入方式、仓库结构、发版、测试与验收标准都已写定。把 SPEC.md 交给任何 AI 编码助手或开发者即可按规格实现。欢迎 PR。
+不自造浏览器协议：远程端是 Chrome 原生 CDP，本机端复用官方 MCP。rchrome 只负责把远程的调试端口安全地搬到本机的 127.0.0.1，并在 MCP 握手里告诉 Claude 这是哪台机器。
 
 ## 安全
 
-- 地址串就是密钥，拿到的人可以完全操作远程 Chrome。不要贴到公开群组。
+- 地址串就是密钥，拿到的人可以完全操作远程浏览器。不要贴到公开群组。要更保险：本机 `rchrome keygen`，远程 `rchrome serve --allow nodekey:…`。
 - 调试端口只监听远程机的 127.0.0.1，不暴露到局域网；只有隧道对端能到达。
-- `serve` 启动的 Chrome 使用独立 profile，不碰日常 Chrome 的登录态。
-- 打洞失败时走 Tailscale 公共中继，端到端加密，中继只见密文。
+- `serve` 启动的 Chrome 使用独立 profile（`~/.rchrome/profile`），不碰日常 Chrome 的登录态；但你在这个 profile 里登录的网站，隧道对端能操作。
+- 打洞失败时走 Tailscale 公共 DERP 中继，端到端 WireGuard 加密，中继只见密文。
 - 不用时 Ctrl+C 结束 `serve`。
+
+## 状态
+
+v0.1 已实现并在 macOS 上实测：serve → connect → Claude Code 里 navigate + screenshot 全链路通过。Windows / Linux 二进制由 CI 交叉编译，欢迎反馈。设计文档 [SPEC.md](SPEC.md)。
 
 ## License
 

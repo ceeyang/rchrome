@@ -2,6 +2,8 @@
 
 > 本文是给**实现者**（AI 编码助手或开发者）的完整规格。读完即可从零建仓库、实现、测试、发版。
 > 最终用户是开发者，但对他们的要求必须是：两端各敲一条命令，不注册账号、不配路由器、不改防火墙、不需要 root。
+>
+> **实现状态**：v0.1.0 已按本文实现（Go，嵌入 tailcat 库），macOS 实测全链路通过。与本文的已知偏差：发版用 `scripts/build-release.sh` + GitHub Actions 而非 GoReleaser（产物命名与 §7.1 一致）；隧道对外固定暴露 9222，Chrome 实际端口被占用时自动换（§4.1）；多台远程主机已在 v0.1 支持（`--name` / `--label` / `rchrome list`）。
 
 ---
 
@@ -154,7 +156,7 @@ $ rchrome connect tcomFwWCCcjS5nKNqAod034nWoJZW0LZqDhhC8U_dKdnDRYQ8uNGFpGQEu
 
 | flag | 默认 | 说明 |
 |---|---|---|
-| `--port` | 9222 | Chrome 调试端口，也是隧道里暴露的端口号 |
+| `--port` | 9222 | Chrome 调试端口。被占用（常见：用户日常的 Chrome 已开了 9222）时自动换一个空闲端口。**隧道对外固定暴露 9222**，与 Chrome 实际端口无关，所以本机 `connect` 永远不用指定端口 |
 | `--profile` | `~/.rchrome/profile` | Chrome user-data-dir。**必须**是非默认目录，Chrome 136+ 拒绝在默认 profile 上开调试端口 |
 | `--chrome <path>` | 自动查找 | 指定浏览器可执行文件 |
 | `--no-launch` | false | 不启动 Chrome，只把已经在跑的 `127.0.0.1:<port>` 搬出去 |
@@ -177,16 +179,18 @@ $ rchrome connect tcomFwWCCcjS5nKNqAod034nWoJZW0LZqDhhC8U_dKdnDRYQ8uNGFpGQEu
 | flag | 默认 | 说明 |
 |---|---|---|
 | `--backend` | `devtools` | `devtools` = chrome-devtools-mcp；`playwright` = @playwright/mcp（也是连 CDP，**仅 Chromium 系**）；`both` = 两个都注册；`safari` = 对应远程的 `serve --safari`。Chrome MCP 与 Playwright 都可以，默认 devtools。附录 C 的 `playwright-server` 为隐藏选项 |
-| `--name` | `remote-chrome` | 注册进 Claude Code 的 MCP 名称。名字要让模型一眼看出是远程浏览器；`--backend safari` 时默认 `remote-safari` |
+| `--name` | `remote-chrome` | 注册进 Claude Code 的 MCP 名称，也是工具前缀（`win-office__take_screenshot`）。多台远程主机靠它区分；`--backend safari` 时默认 `remote-safari` |
+| `--label` | 同 `--name` | 备注名，注入握手说明给 Claude 看（如「办公室的 Windows」） |
+| `--remote-port` | 9222 / 4445 | 一般不用动；附录 C 的 playwright-server 路线用它指到 3000 |
 | `--scope` | `user` | 传给 `claude mcp add -s` |
 | `--no-register` | false | 不动 Claude Code，只打印可粘贴的 JSON 配置（给 Cursor、Codex 等其他客户端） |
 | `--local-port` | 9222 | 本机监听端口；被占用时自动换空闲端口并提示 |
 
 行为：
 1. 解析地址，起 tailcat Client，`DialTCPPort(remotePort)`，通过隧道 `GET /json/version`（Host 头写 `127.0.0.1:<port>`），解析 `Browser` 和 `User-Agent` 得到版本、系统。失败 → 退出码 3，提示「远程主机是否在跑 rchrome serve」。`--backend safari` 时改为拨 4445，发送一条 MCP `initialize` 请求，读到带 `serverInfo` 的响应即算连通，随即关闭连接释放 safaridriver。
-2. 写 `~/.rchrome/connect.json`：`{"addr":"tc…","remote_port":9222,"local_port":9222,"backend":"devtools","os":"windows","browser":"Chrome/142.0.7444.59"}`。`os` / `browser` 供 §5.5.1 注入说明用。
-3. 注册到 Claude Code（§5.6）。
-4. 打印 §3.2 文案。
+2. 写 `~/.rchrome/connections/<name>.json`（并复制一份到 `connect.json` 作「最近一次」）：`{"name":"win-office","label":"办公室的 Windows","addr":"tc…","remote_port":9222,"local_port":9222,"backend":"devtools","os":"Windows","browser":"Chrome/142.0.7444.59"}`。`label` / `os` / `browser` 供 §5.5.1 注入说明用。
+3. 注册到 Claude Code（§5.6）。注册的命令把所有参数显式带上（`mcp --backend … --name … --label … --desc "Windows, Chrome/142" --local-port … --remote-port … <addr>`），这样多台远程主机互不依赖文件状态。
+4. 打印 §3.2 文案，并打印本机身份 `nodekey:…`（给远程 `serve --allow` 用）。
 
 ### 4.3 `rchrome mcp [addr]`
 
@@ -197,6 +201,14 @@ Claude Code 实际调用的命令，用户一般不直接敲。
 3. **stdin / stdout 原样透传给子进程**，rchrome 自己的任何输出只能写 stderr 或日志文件，否则会污染 MCP 的 JSON-RPC 流。唯一例外是 §5.5.1 的握手改写。
 4. `--backend safari`：没有子进程。拨远端 4445，把自己的 stdin/stdout 与隧道连接双向拷贝；同样做 §5.5.1 的握手改写。
 5. 子进程退出（或 Safari 隧道连接断开）→ 关监听、关 Client → 以子进程的退出码退出。收到 SIGINT / SIGTERM → 转发给子进程，等待最多 5 秒后强杀。
+
+### 4.3.1 `rchrome list`
+
+列出 `~/.rchrome/connections/*.json`：名称（工具前缀）、备注、后端、系统、浏览器、地址前 16 位。`--json` 机器可读。
+
+### 4.3.2 `rchrome keygen`
+
+生成（或读取）`~/.rchrome/client.key.json`，打印本机 `nodekey:…`。`connect` / `mcp` / `forward` 自动使用这把身份，所以远程 `serve --allow <nodekey>` 后只有这台机器能连。
 
 ### 4.4 `rchrome forward <addr>`
 
@@ -317,7 +329,7 @@ MCP stdio 传输是按行分隔的 JSON-RPC。`rchrome mcp` 在透传时只做�
 
    > 这组工具操作的是远程主机（<os>，<browser>）上的浏览器，经 rchrome 隧道转发，不是本机浏览器。用户要求操作「远程」「那台电脑」「Windows 上的 Chrome」时用这组工具。
 
-   `<os>` / `<browser>` 来自 `connect.json`。
+   实现时的实际文案（含备注名）：「这组工具（前缀 <name>）操作的是远程主机「<label>」（<os>, <browser>）上的浏览器，经 rchrome 隧道转发，不是本机浏览器。用户提到「<label>」、「远程」、「那台电脑」或远程主机上的浏览器时用这组工具；用户要操作本机浏览器时不要用。」后接一段英文。`<label>` / `<os>` / `<browser>` 由 `connect` 探测后通过 `mcp` 的命令行参数传入。
 3. 其余每一行一个字节不改；解析失败的行原样透传。
 
 这是「Claude 自动识别」的关键。Claude Code 会把 instructions 原样展示给模型，模型因此知道工具指向哪台机器，而不只是看到又一组浏览器工具。配合默认名 `remote-chrome`，即使本机同时连着 Claude in Chrome 扩展和本地 Playwright MCP，模型也能选对。
@@ -347,8 +359,9 @@ claude mcp add    -s <scope> <name> -- <rchrome绝对路径> mcp <addr> --backen
 ### 5.7 配置目录 `~/.rchrome/`
 
 ```
-server.key.json   服务端持久私钥（0600）
-client.key.json   客户端私钥（可选）
+server.key.json   服务端持久私钥（0600），首次 serve 生成并把中继 RegionID 写回，地址从此固定
+client.key.json   客户端持久身份（首次 connect 自动生成）
+connections/      每台远程主机一个 <name>.json
 connect.json      本机最近一次 connect 的参数
 profile/          Chrome user-data-dir（远程主机侧）
 logs/             mcp-*.log、serve-*.log
@@ -409,25 +422,24 @@ rchrome/
 
 ### 7.1 产物
 
-- GoReleaser，`CGO_ENABLED=0`，目标：`darwin/arm64`、`darwin/amd64`、`windows/amd64`、`windows/arm64`、`linux/amd64`、`linux/arm64`。
+- `scripts/build-release.sh <tag>`（纯 sh + go build，CI 与本地共用；GoReleaser 可作替代），`CGO_ENABLED=0`，目标：`darwin/arm64`、`darwin/amd64`、`windows/amd64`、`windows/arm64`、`linux/amd64`、`linux/arm64`。
 - `-ldflags "-s -w -X main.version=… -X main.commit=…"`，`version` 子命令读取。
 - **文件名不带版本号**，这样 `releases/latest/download/` 这条固定 URL 永远指向最新版：
   - `rchrome_darwin_arm64.tar.gz`、`rchrome_darwin_amd64.tar.gz`、`rchrome_linux_amd64.tar.gz`、`rchrome_linux_arm64.tar.gz`
   - `rchrome_windows_amd64.zip`、`rchrome_windows_arm64.zip`
   - `checksums.txt`（sha256）
-- GoReleaser `name_template: "{{ .ProjectName }}_{{ .Os }}_{{ .Arch }}"`。
 - 下载 URL：`https://github.com/ceeyang/rchrome/releases/latest/download/<文件名>`；固定版本用 `releases/download/v1.0.0/<文件名>`。
 
 ### 7.2 CI
 
-`.github/workflows/release.yml`：push tag `v*` → `goreleaser release --clean` → 产物与 checksums 上传到该 tag 的 GitHub Release。`main` 分支每次 push 跑 `go vet` + `go test ./...` + `goreleaser build --snapshot`，保证随时可发。
+`.github/workflows/release.yml`：push tag `v*`（或手动 dispatch 指定 tag）→ `scripts/build-release.sh` → `gh release create`（不存在时）+ `gh release upload --clobber`。`.github/workflows/ci.yml`：`main` 每次 push 跑 `go vet` + `go test ./...` + 一次全平台交叉编译，保证随时可发。
 
 ### 7.3 `scripts/install.sh`（POSIX sh，不依赖 bash）
 
 1. 探测 `uname -s` / `uname -m` → `darwin|linux` × `arm64|amd64`；不支持的组合给出明确错误。
 2. 版本：默认 `latest`；环境变量 `RCHROME_VERSION=v1.0.0` 可固定。
 3. 用 `curl -fsSL`（没有 curl 则 `wget -qO-`）下载 tar.gz 和 `checksums.txt` 到临时目录，`sha256sum` 或 `shasum -a 256` 校验，不匹配即中止。
-4. 解压得到 `rchrome`，`chmod +x`。安装目录：`RCHROME_INSTALL_DIR` → `/usr/local/bin`（可写或可 sudo）→ 否则 `~/.local/bin`，并在它不在 PATH 时打印需要追加到 shell rc 的那一行。
+4. 解压得到 `rchrome`，`chmod 755`，先写 `rchrome.new` 再 `mv` 覆盖（正在运行的旧进程不受影响）。安装目录：`RCHROME_INSTALL_DIR` → `/usr/local/bin`（可写）→ `/opt/homebrew/bin`（可写，Apple Silicon 常见）→ 否则 `~/.local/bin`，并在它不在 PATH 时打印需要追加到 shell rc 的那一行。管道执行时无法 sudo 提示，所以不尝试 sudo。
 5. macOS 对下载的二进制执行 `xattr -d com.apple.quarantine`，避免 Gatekeeper 拦截。
 6. 打印 `rchrome <ver>  <os>/<arch>  → <path>   ✓ 校验通过`。
 7. **透传参数**：`sh -s -- serve [flags]` 时，安装完成后 `exec rchrome serve [flags]`，让远程主机一行到底。
