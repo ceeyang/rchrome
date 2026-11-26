@@ -218,10 +218,12 @@ func buildInstructions(name, label, desc string) string {
 	return fmt.Sprintf(
 		"这组工具（前缀 %s）操作的是远程主机「%s」（%s）上的浏览器，经 rchrome 隧道转发，不是本机浏览器。"+
 			"用户提到「%s」、「远程」、「那台电脑」或远程主机上的浏览器时用这组工具；用户要操作本机浏览器时不要用。"+
-			"如果工具报 Could not connect / Service Unavailable / remote rchrome serve is not running，意思是远程主机上的 rchrome serve 没在运行，请原话告诉用户去远程主机执行 rchrome serve，不要自己重试很多次。\n"+
+			"如果工具报 Could not connect / Service Unavailable / remote rchrome serve is not running，意思是远程主机上的 rchrome serve 没在运行，请原话告诉用户去远程主机执行 rchrome serve，不要自己重试很多次。"+
+			"远程屏幕只会显示前台标签页：Chrome 不绘制后台标签页，所以在后台页上导航、点击、填表都会生效但用户在远程屏幕上看不到。要让用户看到过程，先用 select_page 把目标页切到前台（它会 bringToFront），新开页用 new_page 时不要加 background。\n"+
 			"These tools (prefix %s) control the browser on the REMOTE machine %q (%s) through the rchrome tunnel, not the local browser. "+
 			"Use them when the user refers to %q, \"remote\", or \"that computer\". "+
-			"An error mentioning 'remote rchrome serve is not running' means the remote side is down: tell the user to run `rchrome serve` there.",
+			"An error mentioning 'remote rchrome serve is not running' means the remote side is down: tell the user to run `rchrome serve` there. "+
+			"Chrome only paints the foreground tab: actions on a background tab still work but are invisible on the remote screen, so call select_page first when the user wants to watch.",
 		name, label, desc, label, name, label, desc, label)
 }
 
@@ -331,6 +333,9 @@ func runServe(args []string, verbose bool) (int, error) {
 			return codeNoChrome, err
 		}
 		browserDesc = v.Browser
+		if inst != nil && !*headless {
+			bringToFront(inst.PID(), logf)
+		}
 		target := fmt.Sprintf("127.0.0.1:%d", chromePort)
 		handler = func(c net.Conn, peer string) {
 			up, err := net.DialTimeout("tcp", target, 5*time.Second)
@@ -413,6 +418,18 @@ func runServe(args []string, verbose bool) (int, error) {
 		fmt.Println("\n正在关闭…")
 	}
 	return codeOK, nil
+}
+
+// bringToFront raises the freshly launched browser window so the user sees it
+// instead of their everyday browser. Best effort; only macOS needs help here.
+func bringToFront(pid int, logf tunnel.Logf) {
+	if runtime.GOOS != "darwin" || pid <= 0 {
+		return
+	}
+	script := fmt.Sprintf(`tell application "System Events" to set frontmost of (first process whose unix id is %d) to true`, pid)
+	if out, err := exec.Command("osascript", "-e", script).CombinedOutput(); err != nil {
+		logf("bringToFront: %v %s", err, strings.TrimSpace(string(out)))
+	}
 }
 
 func portFree(port int) bool {
