@@ -1,0 +1,17 @@
+# Go
+/bin/
+/dist/
+*.exe
+*.test
+*.out
+coverage.*
+
+# rchrome runtime state (never commit keys or profiles)
+.rchrome/
+*.key.json
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
