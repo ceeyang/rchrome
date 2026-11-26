@@ -241,6 +241,7 @@ func runServe(args []string, verbose bool) (int, error) {
 	headless := fs.Bool("headless", false, "以 --headless=new 启动 Chrome")
 	keyMode := fs.String("key", "", "'new' = 本次用一次性密钥（地址一次性）；默认用持久密钥，地址固定")
 	safari := fs.Bool("safari", false, "macOS：不启动 Chrome，改为通过隧道暴露 safaridriver --mcp（Safari 27+）")
+	attach := fs.Bool("attach", false, "不新开 profile：接管这台机器上正在运行、已登录的 Chrome（需先在它的 chrome://inspect/#remote-debugging 勾选 Allow remote debugging，Chrome 144+）；--profile 可指定 user-data-dir")
 	jsonOut := fs.Bool("json", false, "机器可读输出")
 	var allow multiFlag
 	fs.Var(&allow, "allow", "只允许这些客户端 nodekey:… 连接（可多次；本机用 rchrome keygen 查看）")
@@ -261,7 +262,19 @@ func runServe(args []string, verbose bool) (int, error) {
 		chromePort  = *port
 		inst        *chrome.Instance
 	)
-	if *safari {
+	if *attach && *safari {
+		return codeGeneric, errors.New("--attach 和 --safari 不能同时用 / mutually exclusive")
+	}
+	if *attach {
+		a, err := chrome.FindAttach(*profile)
+		if err != nil {
+			return codeNoChrome, err
+		}
+		browserDesc = a.Browser() + "（已登录的现有 Chrome，profile " + a.UserDataDir + "）"
+		h := chrome.AttachHandler(a.UserDataDir, logf)
+		handler = func(c net.Conn, peer string) { h(c) }
+		logf("attach: %s port %d ws %s", a.UserDataDir, a.Port, a.WSPath)
+	} else if *safari {
 		if runtime.GOOS != "darwin" {
 			return codeSafari, errors.New("--safari 只支持 macOS / --safari is macOS only")
 		}
@@ -367,15 +380,17 @@ func runServe(args []string, verbose bool) (int, error) {
 	if *jsonOut {
 		out := map[string]any{
 			"addr": srv.Addr, "port": tunnelPort, "browser": browserDesc, "os": runtime.GOOS,
-			"safari": *safari, "relay": srv.RegionName, "persistent": *keyMode != "new", "connect": connectCmd,
+			"safari": *safari, "attach": *attach, "relay": srv.RegionName, "persistent": *keyMode != "new", "connect": connectCmd,
 		}
-		if !*safari {
+		if !*safari && !*attach {
 			out["chrome_port"] = chromePort
 		}
 		_ = json.NewEncoder(os.Stdout).Encode(out)
 	} else {
 		if *safari {
 			fmt.Printf("🐈 safaridriver 已就绪   %s\n   请确认 Safari → 开发 → 已勾选「允许远程自动化和外部代理」\n", browserDesc)
+		} else if *attach {
+			fmt.Printf("🐈 已接管正在运行的 %s   中继 %s\n   注意：隧道对端能以你当前登录的身份操作这个浏览器\n", browserDesc, srv.RegionName)
 		} else {
 			fmt.Printf("🐈 %s 已启动   调试端口 %d   中继 %s\n", browserDesc, chromePort, srv.RegionName)
 		}
@@ -385,6 +400,9 @@ func runServe(args []string, verbose bool) (int, error) {
 			fmt.Printf("🐈 地址（持久，重启不变）\n   %s\n\n", srv.Addr)
 		}
 		fmt.Printf("在本机运行：\n   %s\n\nCtrl+C 结束", connectCmd)
+		if *attach {
+			fmt.Print("（不会关闭你的 Chrome）")
+		}
 		if inst != nil && !*keepChrome {
 			fmt.Print("（会一起关闭 Chrome）")
 		}

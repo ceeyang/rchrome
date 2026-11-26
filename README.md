@@ -56,6 +56,18 @@ $ rchrome connect tcpGFwWCCw3PY83iIXXiEknBhGp-8nonNJz… --name win-office --lab
 
 之后不用再碰 rchrome。每次新开 Claude Code 会话，它自动拉起 `rchrome mcp`，后者自己建隧道、起官方 chrome-devtools-mcp，会话结束自动断开。远程只要 `rchrome serve` 还在跑即可。
 
+## 不新开 profile，直接操作远程已登录的 Chrome
+
+默认的 `serve` 会用独立 profile 起一个干净的 Chrome。想让 Claude 操作远程机器上**正在用、已经登录**的那个 Chrome，用 `--attach`：
+
+1. 在远程 Chrome（144+）地址栏打开 `chrome://inspect/#remote-debugging`，勾选 **Allow remote debugging for this browser instance**。只需一次，Chrome 重启后仍有效。
+2. 远程运行 `rchrome serve --attach`（不会动你的 Chrome，Ctrl+C 也不会关它）。
+3. 本机照常 `rchrome connect`。
+
+原理：Chrome 开了这个开关后会在 profile 目录写 `DevToolsActivePort`（端口 + 带随机令牌的 WebSocket 路径），并且对 `/json/version` 之类的发现接口回 404。rchrome 读这个文件，自己回答 `/json/version` 并把 WebSocket 握手原样转给 Chrome，所以本机的 chrome-devtools-mcp / Playwright 不用任何改动。Chrome 重启换了端口或令牌也不用重启 rchrome。Edge / Brave / Chromium 用 `--profile <user-data-dir>` 指定。
+
+**注意**：这时隧道对端能以你当前登录的身份操作所有网站。请用 `--allow` 锁定本机身份，用完就关。
+
 ## Claude 怎么认出它、怎么区分多台机器
 
 - `--name` 是 MCP 名称，也是工具前缀：`win-office__take_screenshot`、`mac-home__navigate_page`。
@@ -82,7 +94,7 @@ rchrome connect tc… --backend safari        # 本机
 ## 子命令
 
 ```
-rchrome serve     [--port 9222] [--headless] [--no-launch] [--keep-chrome] [--allow nodekey:…] [--safari] [--key new]
+rchrome serve     [--attach] [--port 9222] [--headless] [--no-launch] [--keep-chrome] [--allow nodekey:…] [--safari] [--key new]
 rchrome connect   <tc地址> [--name N] [--label 备注] [--backend devtools|playwright|both|safari] [--scope user|project|local] [--no-register]
 rchrome list                                   已连接的远程主机
 rchrome forward   [tc地址] [--local-port 9222]  纯端口转发，给 Playwright 脚本 connectOverCDP 用

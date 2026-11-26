@@ -165,6 +165,7 @@ $ rchrome connect tcomFwWCCcjS5nKNqAod034nWoJZW0LZqDhhC8U_dKdnDRYQ8uNGFpGQEu
 | `--headless` | false | 以 `--headless=new` 启动 Chrome |
 | `--key new` | 使用持久密钥 | 本次用一次性密钥（地址一次性） |
 | `--safari` | false | macOS 专用。不启动 Chrome；每个隧道连接拉起一个 `/usr/bin/safaridriver --mcp` 进程并桥接其 stdio。与 `--port` / `--profile` / `--chrome` / `--headless` 互斥 |
+| `--attach` | false | **不新开 profile**，接管这台机器上正在运行、已登录的 Chrome（见 §4.1.1）。`--profile` 此时表示要接管的 user-data-dir（默认按 Chrome → Edge → Chromium → Brave 的标准目录找）。与 `--safari` 互斥 |
 
 行为：
 1. 查找 Chrome（§5.2）。找不到 → 退出码 2，提示 `--chrome`。
@@ -173,6 +174,18 @@ $ rchrome connect tcomFwWCCcjS5nKNqAod034nWoJZW0LZqDhhC8U_dKdnDRYQ8uNGFpGQEu
 4. 打印 §3.1 文案。`--json` 时输出 `{"addr":"tc…","port":9222,"browser":"Chrome/142…","os":"windows"}`。
 5. 阻塞直到 SIGINT / SIGTERM：关闭 Server，按 `--keep-chrome` 决定是否结束 Chrome（Windows 上要结束整棵进程树）。
 6. `--safari` 时，步骤 1、2 换成：检查 `/usr/bin/safaridriver --help` 输出含 `--mcp`（Safari 27+），否则退出码 6 并提示升级 Safari。隧道上暴露约定端口 **4445**（常量 `SafariMCPPort`）。OnTCP 收到连接 → 启动 `/usr/bin/safaridriver --mcp` → 连接与进程 stdin/stdout 双向拷贝 → 连接断开即结束进程。同一时刻只允许一个连接（safaridriver 只支持一个会话），第二个连接收到一行 JSON-RPC error 后关闭。「允许远程自动化和外部代理」是 Safari 的用户设置，rchrome 只能提示，不能代为勾选。
+
+### 4.1.1 `serve --attach`：接管已登录的现有 Chrome
+
+前提：远程 Chrome 144+，用户在 `chrome://inspect/#remote-debugging` 勾过「Allow remote debugging for this browser instance」（持久设置）。此时 Chrome 在 `<user-data-dir>/DevToolsActivePort` 写两行：端口、`/devtools/browser/<随机令牌>`；只有这个令牌路径接受 WebSocket 升级，`/json/version` 等发现接口一律 404（实测 Chrome 158，端口空闲时取 9222）。Host 头只要求是 localhost / IP 字面量，端口不校验，所以本机转发端口不同也能连。
+
+实现（`internal/chrome/attach.go`）：
+1. 定位 user-data-dir：macOS `~/Library/Application Support/Google/Chrome`，Windows `%LocalAppData%\Google\Chrome\User Data`，Linux `~/.config/google-chrome`；Edge / Chromium / Brave 同理作为兜底；`--profile` 覆盖。
+2. 读 `DevToolsActivePort`，拨一下端口确认 Chrome 还活着（文件可能是上次残留）；读 `Last Version` 得到版本号。缺文件或端口没人听 → 退出码 2，提示去 chrome://inspect 勾选。
+3. 隧道处理函数按连接工作：先读完 HTTP 头块（原始字节保留）。`GET /json/version`（及 `/json`、`/json/list`）→ 本地合成响应，`webSocketDebuggerUrl` = `ws://<请求的 Host 头><令牌路径>`，`Browser` = `Chrome/<Last Version>`；其它请求（即 WebSocket 升级）→ 拨真实端口，把已读的原始头字节和缓冲余量原样写过去，然后双向拼接。每个连接都重新读 `DevToolsActivePort`，Chrome 重启换端口 / 令牌不需要重启 rchrome。
+4. 不启动也不关闭 Chrome；输出里明确提示「隧道对端能以你当前登录的身份操作这个浏览器」。
+
+单测用一个假 Chrome（令牌路径回 101 并回显，其它路径 404）覆盖：合成 `/json/version`、升级拼接、未开启时的 503。
 
 ### 4.2 `rchrome connect <addr>`
 
@@ -491,6 +504,7 @@ Homebrew tap `ceeyang/tap`、Scoop bucket、`go install github.com/ceeyang/rchro
 | A12 | `--backend both` | `remote-chrome` 与 `remote-chrome-pw` 两组工具都能截图 |
 | A13 | 全新 Windows 11 虚拟机，无 Git / Go / Node，只有 Chrome | 在 PowerShell 粘贴 `$env:RCHROME_RUN='serve'; irm …/install.ps1 \| iex` 一行，60 秒内打出地址；全新 macOS 同理用 `curl … \| sh -s -- serve` |
 | A14 | 本机已装旧版 rchrome | 重跑安装脚本升级到最新，`rchrome version` 正确；已注册的 MCP 继续可用（因为注册的是绝对路径且路径不变） |
+| A15 | 远程 Chrome 已登录若干网站，勾选 chrome://inspect 远程调试后 `serve --attach` | 本机 Claude 用 `list_pages` 能看到远程当前打开的标签页，`new_page` 打开的页面带着远程的登录态；Ctrl+C 结束 serve 后远程 Chrome 仍在 |
 
 ---
 
