@@ -65,7 +65,7 @@ func (c *Client) Forward(ctx context.Context, ln net.Listener, remotePort uint16
 			return
 		}
 		go func() {
-			dctx, cancel := context.WithTimeout(ctx, 20*time.Second)
+			dctx, cancel := context.WithTimeout(ctx, 12*time.Second)
 			remote, err := c.cl.DialTCPPort(dctx, remotePort)
 			cancel()
 			if err != nil {

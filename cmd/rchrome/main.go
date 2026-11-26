@@ -217,9 +217,11 @@ func buildInstructions(name, label, desc string) string {
 	}
 	return fmt.Sprintf(
 		"这组工具（前缀 %s）操作的是远程主机「%s」（%s）上的浏览器，经 rchrome 隧道转发，不是本机浏览器。"+
-			"用户提到「%s」、「远程」、「那台电脑」或远程主机上的浏览器时用这组工具；用户要操作本机浏览器时不要用。\n"+
+			"用户提到「%s」、「远程」、「那台电脑」或远程主机上的浏览器时用这组工具；用户要操作本机浏览器时不要用。"+
+			"如果工具报 Could not connect / Service Unavailable / remote rchrome serve is not running，意思是远程主机上的 rchrome serve 没在运行，请原话告诉用户去远程主机执行 rchrome serve，不要自己重试很多次。\n"+
 			"These tools (prefix %s) control the browser on the REMOTE machine %q (%s) through the rchrome tunnel, not the local browser. "+
-			"Use them when the user refers to %q, \"remote\", or \"that computer\".",
+			"Use them when the user refers to %q, \"remote\", or \"that computer\". "+
+			"An error mentioning 'remote rchrome serve is not running' means the remote side is down: tell the user to run `rchrome serve` there.",
 		name, label, desc, label, name, label, desc, label)
 }
 
@@ -363,10 +365,14 @@ func runServe(args []string, verbose bool) (int, error) {
 		connectCmd += " --backend safari"
 	}
 	if *jsonOut {
-		_ = json.NewEncoder(os.Stdout).Encode(map[string]any{
-			"addr": srv.Addr, "port": tunnelPort, "chrome_port": chromePort, "browser": browserDesc, "os": runtime.GOOS,
+		out := map[string]any{
+			"addr": srv.Addr, "port": tunnelPort, "browser": browserDesc, "os": runtime.GOOS,
 			"safari": *safari, "relay": srv.RegionName, "persistent": *keyMode != "new", "connect": connectCmd,
-		})
+		}
+		if !*safari {
+			out["chrome_port"] = chromePort
+		}
+		_ = json.NewEncoder(os.Stdout).Encode(out)
 	} else {
 		if *safari {
 			fmt.Printf("🐈 safaridriver 已就绪   %s\n   请确认 Safari → 开发 → 已勾选「允许远程自动化和外部代理」\n", browserDesc)
@@ -664,7 +670,11 @@ func safariProbe(conn net.Conn) (string, error) {
 	if resp.Error != nil {
 		return "", errors.New(resp.Error.Message)
 	}
-	return strings.TrimSpace("Safari " + resp.Result.ServerInfo.Name + " " + resp.Result.ServerInfo.Version), nil
+	name := resp.Result.ServerInfo.Name
+	if !strings.HasPrefix(strings.ToLower(name), "safari") {
+		name = "Safari " + name
+	}
+	return strings.TrimSpace(name + " " + resp.Result.ServerInfo.Version), nil
 }
 
 // ---------------------------------------------------------------- mcp
@@ -819,7 +829,9 @@ func write503(c net.Conn, err error) {
 	defer c.Close()
 	msg := remoteDownMessage(err)
 	_ = c.SetWriteDeadline(time.Now().Add(5 * time.Second))
-	fmt.Fprintf(c, "HTTP/1.1 503 Service Unavailable\r\nContent-Type: text/plain; charset=utf-8\r\nContent-Length: %d\r\nConnection: close\r\n\r\n%s", len(msg), msg)
+	// Puppeteer / Playwright surface only the status line's reason phrase, so
+	// the explanation goes there (ASCII only) as well as in the body.
+	fmt.Fprintf(c, "HTTP/1.1 503 remote rchrome serve is not running - run 'rchrome serve' on the remote machine\r\nContent-Type: text/plain; charset=utf-8\r\nContent-Length: %d\r\nConnection: close\r\n\r\n%s", len(msg), msg)
 }
 
 // ---------------------------------------------------------------- forward
