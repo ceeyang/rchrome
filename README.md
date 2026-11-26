@@ -10,6 +10,28 @@ Claude Code 自带的 Claude in Chrome 扩展可以跨机器，但要求在另�
 
 rchrome 把这些压成两条命令。
 
+## 安装
+
+一行命令，不需要 Git、Go 或编译。两台机器都是这一行：
+
+```bash
+# macOS / Linux
+curl -fsSL https://raw.githubusercontent.com/ceeyang/rchrome/main/scripts/install.sh | sh
+```
+
+```powershell
+# Windows PowerShell
+irm https://raw.githubusercontent.com/ceeyang/rchrome/main/scripts/install.ps1 | iex
+```
+
+远程主机想一行到底（装完直接开始服务）：
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/ceeyang/rchrome/main/scripts/install.sh | sh -s -- serve
+```
+
+本机侧另需 Node.js 20+（官方 chrome-devtools-mcp 通过 npx 运行）；远程主机不需要。
+
 ## 用法
 
 远程主机（Windows / macOS / Linux）：
@@ -25,10 +47,21 @@ rchrome serve
 ```bash
 rchrome connect tcomFwWCCcjS5nKNqAod034nWoJZW0LZqDhhC8U_dKdnDRYQ8uNGFpGQEu
 # ✓ 已连上远程 Chrome   Chrome/142.0.7444.59   Windows
-# ✓ 已注册到 Claude Code   名称 rchrome
+# ✓ 已注册到 Claude Code   名称 remote-chrome
 ```
 
 之后新开一个 Claude Code 会话，让它「打开 example.com 并截图」。每次会话由 Claude Code 自动拉起 `rchrome mcp`，它自己建隧道、起官方 chrome-devtools-mcp，会话结束自动断开。远程只要 `rchrome serve` 还在跑即可。
+
+**Claude 不需要任何提示就能认出它。** 工具列表里会出现 `remote-chrome__*` 一组工具，MCP 握手说明里写明「这是远程主机 Windows 上的 Chrome，不是本机浏览器」。想用 Playwright 的工具集就 `connect --backend playwright`，`--backend both` 两套都要。
+
+远程是只有 Safari 的 Mac：
+
+```bash
+rchrome serve --safari                 # 远程 Mac，走 Apple 官方 safaridriver --mcp（Safari 27+）
+rchrome connect tc… --backend safari   # 本机
+```
+
+Playwright 连不上真 Safari（它的 webkit 是自带内核，`--backend playwright` 只对 Chrome / Edge 有效），所以 Safari 走 Apple 自己的 MCP。
 
 ## 原理
 

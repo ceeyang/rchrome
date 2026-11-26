@@ -55,15 +55,48 @@
 | G5 | 支持远程主机 Windows / macOS / Linux，本机 macOS / Linux / Windows |
 | G6 | 两台机器可以在不同网络（例如家里 Wi-Fi 和手机热点），无公网 IP、无端口映射 |
 | G7 | 无账号、无注册、无 root、无外部运行时依赖（除本机需要 Node 20+ 跑 chrome-devtools-mcp） |
-| G8 | 单二进制，GitHub Releases 提供各平台产物，附一行安装脚本 |
+| G8 | **一条命令安装**：用户不 clone 仓库、不装 Git / Go、不编译。安装脚本从 GitHub Releases 下载对应平台的单二进制，校验后放进 PATH；脚本可直接接着执行 `serve`，远程主机从零到打出地址只敲一行 |
+| G9 | Claude **自动识别**：首次 `connect` 之后，每次新开 Claude Code 会话，远程浏览器工具自动出现在工具列表，并在握手时注入说明让 Claude 知道这些工具指向哪台机器；用户不需要先给 Claude 任何提示 |
+| G10 | 远程主机是只有 Safari 的 Mac 时，`rchrome serve --safari` 走 Apple 官方 `safaridriver --mcp`，本机命令与体验不变 |
 
 ### 非目标（v1 不做，留到 §10）
 
-Safari、同时连多台远程机、Web 管理界面、Windows 服务 / systemd 常驻、二维码、GUI。
+同时连多台远程机、局域网自动发现（v1.1）、Web 管理界面、Windows 服务 / systemd 常驻、二维码、GUI。真 Safari 之外的 WebKit 内核路线见附录 C。
 
 ---
 
 ## 3. 用户体验（输出文案必须与此一致）
+
+### 3.0 安装（两台机器都是这一行，不需要 Git / Go / 编译）
+
+macOS / Linux：
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/ceeyang/rchrome/main/scripts/install.sh | sh
+```
+
+Windows（PowerShell）：
+
+```powershell
+irm https://raw.githubusercontent.com/ceeyang/rchrome/main/scripts/install.ps1 | iex
+```
+
+远程主机想一行到底，安装完直接开始服务：
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/ceeyang/rchrome/main/scripts/install.sh | sh -s -- serve
+```
+```powershell
+$env:RCHROME_RUN='serve'; irm https://raw.githubusercontent.com/ceeyang/rchrome/main/scripts/install.ps1 | iex
+```
+
+脚本输出：
+
+```
+rchrome v1.0.0  darwin/arm64  → /usr/local/bin/rchrome   ✓ 校验通过
+```
+
+可选渠道：`brew install ceeyang/tap/rchrome`、`scoop install rchrome`（见 §7）。本机侧另需 Node.js 20+（chrome-devtools-mcp / playwright-mcp 通过 `npx` 运行），`connect` 会检查并给出安装提示；远程主机不需要 Node。
 
 ### 3.1 远程主机
 
@@ -81,18 +114,35 @@ Ctrl+C 结束（会一起关闭 Chrome）
 
 连接进来时追加一行：`→ 本机已连接  nodekey:cfb6…dfd16  直连 / 经中继 nyc`。
 
+远程主机只有 Safari（macOS）时：
+
+```
+$ rchrome serve --safari
+🐈 safaridriver 已就绪   Safari 27.2   --mcp 可用
+   请确认 Safari → 开发 → 已勾选「允许远程自动化和外部代理」
+🐈 地址（持久，重启不变）
+   tcomFwWCCcjS5nKNqAod034nWoJZW0LZqDhhC8U_dKdnDRYQ8uNGFpGQEu
+
+在本机运行：
+   rchrome connect tcomFwWCCcjS5nKNqAod034nWoJZW0LZqDhhC8U_dKdnDRYQ8uNGFpGQEu --backend safari
+```
+
 ### 3.2 本机
 
 ```
 $ rchrome connect tcomFwWCCcjS5nKNqAod034nWoJZW0LZqDhhC8U_dKdnDRYQ8uNGFpGQEu
 ✓ 已连上远程 Chrome   Chrome/142.0.7444.59   Windows
-✓ 已注册到 Claude Code   名称 rchrome   后端 chrome-devtools-mcp
+✓ 已注册到 Claude Code   名称 remote-chrome   后端 chrome-devtools-mcp
 新开一个 Claude Code 会话，对它说「打开 example.com 并截图」试试。
 ```
 
 ### 3.3 之后
 
 用户只需保证远程主机的 `rchrome serve` 还在跑。本机每次新开 Claude Code 会话，Claude Code 启动 MCP 子进程 `rchrome mcp`，它自己拉隧道、起 chrome-devtools-mcp；会话结束，子进程退出，隧道随之关闭。
+
+**Claude 不需要任何额外提示。** 它的工具列表里会出现 `remote-chrome__navigate_page`、`remote-chrome__take_screenshot` 等工具，握手说明（§5.5.1）里写着「这组工具操作的是远程主机 Windows 上的 Chrome/142，不是本机浏览器」。用户说「打开 example.com 截图」，Claude 直接用。
+
+远程 `serve` 没在跑时，工具仍然在列表里；Claude 调用时收到一条明确的中文错误（§5.9），会原话转给用户。
 
 ---
 
@@ -112,6 +162,7 @@ $ rchrome connect tcomFwWCCcjS5nKNqAod034nWoJZW0LZqDhhC8U_dKdnDRYQ8uNGFpGQEu
 | `--allow <nodekey>` | 空 | 只允许这些客户端公钥连接，可多次 |
 | `--headless` | false | 以 `--headless=new` 启动 Chrome |
 | `--key new` | 使用持久密钥 | 本次用一次性密钥（地址一次性） |
+| `--safari` | false | macOS 专用。不启动 Chrome；每个隧道连接拉起一个 `/usr/bin/safaridriver --mcp` 进程并桥接其 stdio。与 `--port` / `--profile` / `--chrome` / `--headless` 互斥 |
 
 行为：
 1. 查找 Chrome（§5.2）。找不到 → 退出码 2，提示 `--chrome`。
@@ -119,20 +170,21 @@ $ rchrome connect tcomFwWCCcjS5nKNqAod034nWoJZW0LZqDhhC8U_dKdnDRYQ8uNGFpGQEu
 3. 加载或创建持久密钥（§5.3），启动 tailcat Server，仅接受发往 `<port>` 的连接，其余端口直接关闭。
 4. 打印 §3.1 文案。`--json` 时输出 `{"addr":"tc…","port":9222,"browser":"Chrome/142…","os":"windows"}`。
 5. 阻塞直到 SIGINT / SIGTERM：关闭 Server，按 `--keep-chrome` 决定是否结束 Chrome（Windows 上要结束整棵进程树）。
+6. `--safari` 时，步骤 1、2 换成：检查 `/usr/bin/safaridriver --help` 输出含 `--mcp`（Safari 27+），否则退出码 6 并提示升级 Safari。隧道上暴露约定端口 **4445**（常量 `SafariMCPPort`）。OnTCP 收到连接 → 启动 `/usr/bin/safaridriver --mcp` → 连接与进程 stdin/stdout 双向拷贝 → 连接断开即结束进程。同一时刻只允许一个连接（safaridriver 只支持一个会话），第二个连接收到一行 JSON-RPC error 后关闭。「允许远程自动化和外部代理」是 Safari 的用户设置，rchrome 只能提示，不能代为勾选。
 
 ### 4.2 `rchrome connect <addr>`
 
 | flag | 默认 | 说明 |
 |---|---|---|
-| `--backend` | `devtools` | `devtools` = chrome-devtools-mcp；`playwright` = @playwright/mcp；`both` = 注册两个 |
-| `--name` | `rchrome` | 注册进 Claude Code 的 MCP 名称 |
+| `--backend` | `devtools` | `devtools` = chrome-devtools-mcp；`playwright` = @playwright/mcp（也是连 CDP，**仅 Chromium 系**）；`both` = 两个都注册；`safari` = 对应远程的 `serve --safari`。Chrome MCP 与 Playwright 都可以，默认 devtools。附录 C 的 `playwright-server` 为隐藏选项 |
+| `--name` | `remote-chrome` | 注册进 Claude Code 的 MCP 名称。名字要让模型一眼看出是远程浏览器；`--backend safari` 时默认 `remote-safari` |
 | `--scope` | `user` | 传给 `claude mcp add -s` |
 | `--no-register` | false | 不动 Claude Code，只打印可粘贴的 JSON 配置（给 Cursor、Codex 等其他客户端） |
 | `--local-port` | 9222 | 本机监听端口；被占用时自动换空闲端口并提示 |
 
 行为：
-1. 解析地址，起 tailcat Client，`DialTCPPort(remotePort)`，通过隧道 `GET /json/version`（Host 头写 `127.0.0.1:<port>`），解析 `Browser` 和 `User-Agent` 得到版本、系统。失败 → 退出码 3，提示「远程主机是否在跑 rchrome serve」。
-2. 写 `~/.rchrome/connect.json`：`{"addr":"tc…","remote_port":9222,"local_port":9222,"backend":"devtools"}`。
+1. 解析地址，起 tailcat Client，`DialTCPPort(remotePort)`，通过隧道 `GET /json/version`（Host 头写 `127.0.0.1:<port>`），解析 `Browser` 和 `User-Agent` 得到版本、系统。失败 → 退出码 3，提示「远程主机是否在跑 rchrome serve」。`--backend safari` 时改为拨 4445，发送一条 MCP `initialize` 请求，读到带 `serverInfo` 的响应即算连通，随即关闭连接释放 safaridriver。
+2. 写 `~/.rchrome/connect.json`：`{"addr":"tc…","remote_port":9222,"local_port":9222,"backend":"devtools","os":"windows","browser":"Chrome/142.0.7444.59"}`。`os` / `browser` 供 §5.5.1 注入说明用。
 3. 注册到 Claude Code（§5.6）。
 4. 打印 §3.2 文案。
 
@@ -141,9 +193,10 @@ $ rchrome connect tcomFwWCCcjS5nKNqAod034nWoJZW0LZqDhhC8U_dKdnDRYQ8uNGFpGQEu
 Claude Code 实际调用的命令，用户一般不直接敲。
 
 1. `addr` 省略时读 `~/.rchrome/connect.json`。
-2. 起 tailcat Client；本机 `net.Listen("tcp", "127.0.0.1:<local_port>")`，被占用就换空闲端口。每个 accept 到的连接 → `client.DialTCPPort(ctx, remotePort)` → 双向 `io.Copy`。
-3. 启动子进程（§5.5）。**stdin / stdout 原样透传给子进程**，rchrome 自己的任何输出只能写 stderr 或日志文件，否则会污染 MCP 的 JSON-RPC 流。
-4. 子进程退出 → 关监听、关 Client → 以子进程的退出码退出。收到 SIGINT / SIGTERM → 转发给子进程，等待最多 5 秒后强杀。
+2. **懒连接**：先起本机监听 `127.0.0.1:<local_port>`（被占用就换空闲端口），立刻启动子进程（§5.5），不等远端。隧道在第一个 accept 到的连接时才 `client.DialTCPPort(ctx, remotePort)` → 双向 `io.Copy`。这样远程 `serve` 没开时工具照样注册成功，错误推迟到调用时刻（§5.9）。
+3. **stdin / stdout 原样透传给子进程**，rchrome 自己的任何输出只能写 stderr 或日志文件，否则会污染 MCP 的 JSON-RPC 流。唯一例外是 §5.5.1 的握手改写。
+4. `--backend safari`：没有子进程。拨远端 4445，把自己的 stdin/stdout 与隧道连接双向拷贝；同样做 §5.5.1 的握手改写。
+5. 子进程退出（或 Safari 隧道连接断开）→ 关监听、关 Client → 以子进程的退出码退出。收到 SIGINT / SIGTERM → 转发给子进程，等待最多 5 秒后强杀。
 
 ### 4.4 `rchrome forward <addr>`
 
@@ -252,6 +305,22 @@ for {
 - `cmd.Stdin = os.Stdin`、`cmd.Stdout = os.Stdout`、`cmd.Stderr` 指向 `~/.rchrome/logs/mcp-<date>.log`（也 tee 一份到 rchrome 的 stderr 便于 Claude Code 的 `/mcp` 面板看错误）。
 - 等隧道监听 ready 后再启动子进程，避免子进程第一次连接就失败。
 - 找不到 `npx` → 退出码 4，stderr 打印「需要 Node.js 20+，安装后重试」。
+- `--backend playwright` 同样是连 CDP 端点，所以**只对 Chrome / Edge / Chromium 有效**。Playwright 连不上真 Safari（它的 webkit 是自带内核），真 Safari 走 `safari` 后端；WebKit 内核路线见附录 C。
+- `--backend safari`：无子进程，纯 stdio 管道，见 §4.3 第 4 条。
+
+### 5.5.1 握手改写：让 Claude 知道这是远程浏览器
+
+MCP stdio 传输是按行分隔的 JSON-RPC。`rchrome mcp` 在透传时只做一件事：
+
+1. 读 stdin 流，记下 `method == "initialize"` 那条请求的 `id`。
+2. 读子进程（或 Safari 隧道）的 stdout 流，找到 `id` 相同的响应，把 `result.instructions` 设为下面这段（已有内容则追加在前面）：
+
+   > 这组工具操作的是远程主机（<os>，<browser>）上的浏览器，经 rchrome 隧道转发，不是本机浏览器。用户要求操作「远程」「那台电脑」「Windows 上的 Chrome」时用这组工具。
+
+   `<os>` / `<browser>` 来自 `connect.json`。
+3. 其余每一行一个字节不改；解析失败的行原样透传。
+
+这是「Claude 自动识别」的关键。Claude Code 会把 instructions 原样展示给模型，模型因此知道工具指向哪台机器，而不只是看到又一组浏览器工具。配合默认名 `remote-chrome`，即使本机同时连着 Claude in Chrome 扩展和本地 Playwright MCP，模型也能选对。
 
 ### 5.6 Claude Code 注册
 
@@ -267,7 +336,7 @@ claude mcp add    -s <scope> <name> -- <rchrome绝对路径> mcp <addr> --backen
 ```json
 {
   "mcpServers": {
-    "rchrome": {
+    "remote-chrome": {
       "command": "/abs/path/rchrome",
       "args": ["mcp", "tc…", "--backend", "devtools"]
     }
@@ -301,7 +370,15 @@ Windows 下 `~` 取 `%USERPROFILE%`。
 ✗ 连不上远程主机：请确认那边 rchrome serve 还在运行，地址是否复制完整 / Cannot reach remote: is `rchrome serve` running?
 ```
 
-退出码：0 成功；2 找不到 Chrome；3 隧道连接失败；4 缺 Node / npx；5 Claude CLI 注册失败；1 其它。
+退出码：0 成功；2 找不到 Chrome；3 隧道连接失败；4 缺 Node / npx；5 Claude CLI 注册失败；6 safaridriver 缺失或不支持 `--mcp`；1 其它。
+
+**工具调用时刻的错误**（懒连接下远程未运行）：`rchrome mcp` 拨号失败时不要让子进程裸报 ECONNREFUSED。在本地监听处直接回一个 HTTP 503，body 为：
+
+```
+远程主机的 rchrome serve 未运行，或地址已失效。请在远程主机执行 rchrome serve 后重试。 / Remote rchrome serve is not running.
+```
+
+chrome-devtools-mcp / playwright-mcp 会把这段文字带进工具错误，Claude 原话转给用户。Safari 后端则向 stdout 写一条 JSON-RPC error（code -32000，同一段文字）。
 
 ---
 
@@ -330,11 +407,44 @@ rchrome/
 
 ## 7. 发布
 
+### 7.1 产物
+
 - GoReleaser，`CGO_ENABLED=0`，目标：`darwin/arm64`、`darwin/amd64`、`windows/amd64`、`windows/arm64`、`linux/amd64`、`linux/arm64`。
 - `-ldflags "-s -w -X main.version=… -X main.commit=…"`，`version` 子命令读取。
-- `install.sh`：探测 OS / arch → 下载对应 tar.gz → 校验 `checksums.txt` → 放到 `/usr/local/bin`（无权限则 `~/.local/bin` 并提示加 PATH）。
-- `install.ps1`：下载 zip → 解压到 `%LOCALAPPDATA%\rchrome` → 写入用户 PATH。
-- 可选：Homebrew tap、Scoop bucket。
+- **文件名不带版本号**，这样 `releases/latest/download/` 这条固定 URL 永远指向最新版：
+  - `rchrome_darwin_arm64.tar.gz`、`rchrome_darwin_amd64.tar.gz`、`rchrome_linux_amd64.tar.gz`、`rchrome_linux_arm64.tar.gz`
+  - `rchrome_windows_amd64.zip`、`rchrome_windows_arm64.zip`
+  - `checksums.txt`（sha256）
+- GoReleaser `name_template: "{{ .ProjectName }}_{{ .Os }}_{{ .Arch }}"`。
+- 下载 URL：`https://github.com/ceeyang/rchrome/releases/latest/download/<文件名>`；固定版本用 `releases/download/v1.0.0/<文件名>`。
+
+### 7.2 CI
+
+`.github/workflows/release.yml`：push tag `v*` → `goreleaser release --clean` → 产物与 checksums 上传到该 tag 的 GitHub Release。`main` 分支每次 push 跑 `go vet` + `go test ./...` + `goreleaser build --snapshot`，保证随时可发。
+
+### 7.3 `scripts/install.sh`（POSIX sh，不依赖 bash）
+
+1. 探测 `uname -s` / `uname -m` → `darwin|linux` × `arm64|amd64`；不支持的组合给出明确错误。
+2. 版本：默认 `latest`；环境变量 `RCHROME_VERSION=v1.0.0` 可固定。
+3. 用 `curl -fsSL`（没有 curl 则 `wget -qO-`）下载 tar.gz 和 `checksums.txt` 到临时目录，`sha256sum` 或 `shasum -a 256` 校验，不匹配即中止。
+4. 解压得到 `rchrome`，`chmod +x`。安装目录：`RCHROME_INSTALL_DIR` → `/usr/local/bin`（可写或可 sudo）→ 否则 `~/.local/bin`，并在它不在 PATH 时打印需要追加到 shell rc 的那一行。
+5. macOS 对下载的二进制执行 `xattr -d com.apple.quarantine`，避免 Gatekeeper 拦截。
+6. 打印 `rchrome <ver>  <os>/<arch>  → <path>   ✓ 校验通过`。
+7. **透传参数**：`sh -s -- serve [flags]` 时，安装完成后 `exec rchrome serve [flags]`，让远程主机一行到底。
+8. 幂等：已是同版本则跳过下载，直接进入第 7 步。
+
+### 7.4 `scripts/install.ps1`（PowerShell 5.1+ / 7）
+
+1. `$env:PROCESSOR_ARCHITECTURE` → `amd64|arm64`。
+2. 版本同上，`$env:RCHROME_VERSION`。
+3. `Invoke-WebRequest` 下载 zip 与 `checksums.txt`，`Get-FileHash -Algorithm SHA256` 校验。
+4. 解压到 `%LOCALAPPDATA%\rchrome\`，把该目录写入**用户级** PATH（`[Environment]::SetEnvironmentVariable(..., 'User')`），同时追加到当前会话 `$env:PATH`，本窗口立刻可用。
+5. `Unblock-File` 去掉下载标记。
+6. `$env:RCHROME_RUN` 非空时，安装后直接 `& rchrome $env:RCHROME_RUN`。
+
+### 7.5 其它渠道（可选，脚本之外）
+
+Homebrew tap `ceeyang/tap`、Scoop bucket、`go install github.com/ceeyang/rchrome/cmd/rchrome@latest`。它们都不是主路径，README 里主推 §3.0 的一行脚本。
 
 ---
 
@@ -363,6 +473,12 @@ rchrome/
 | A6 | 远程 serve 没开 | connect 3 秒内给出 ✗ 和明确提示，退出码 3 |
 | A7 | 本机没装 Node | connect 阶段就报退出码 4 和安装提示，而不是等到 Claude Code 里才失败 |
 | A8 | `--allow` 指定了别的公钥 | 本机连接被拒，serve 侧有日志 |
+| A9 | 远程是只有 Safari 的 Mac，`serve --safari` + `connect --backend safari` | 新会话里出现 `remote-safari__*` 工具，「打开 example.com 截图」成功，远程 Mac 弹出 Safari 自动化窗口 |
+| A10 | 远程 serve 未运行时新开 Claude Code | `remote-chrome__*` 工具仍在列表；调用时 Claude 转述「远程主机的 rchrome serve 未运行」 |
+| A11 | 本机同时连着 Claude in Chrome 扩展和本地 Playwright MCP | 对 Claude 说「用远程那台电脑的 Chrome 打开 example.com」，它选 `remote-chrome__*`；Claude Code `/mcp` 面板里 remote-chrome 的说明显示远程主机信息 |
+| A12 | `--backend both` | `remote-chrome` 与 `remote-chrome-pw` 两组工具都能截图 |
+| A13 | 全新 Windows 11 虚拟机，无 Git / Go / Node，只有 Chrome | 在 PowerShell 粘贴 `$env:RCHROME_RUN='serve'; irm …/install.ps1 \| iex` 一行，60 秒内打出地址；全新 macOS 同理用 `curl … \| sh -s -- serve` |
+| A14 | 本机已装旧版 rchrome | 重跑安装脚本升级到最新，`rchrome version` 正确；已注册的 MCP 继续可用（因为注册的是绝对路径且路径不变） |
 
 ---
 
@@ -378,10 +494,10 @@ rchrome/
 
 ## 10. 后续版本
 
-- v1.1：`rchrome keygen` + 客户端持久身份；`serve --qr` 打二维码；`--allow` 完整化。
+- v1.1：`rchrome keygen` + 客户端持久身份；`--allow` 完整化；`serve --qr`；**局域网自动发现**：`serve` 用 mDNS（`_rchrome._tcp`）广播地址，`connect` 不带参数时扫同网段并列出可选项。跨互联网做不到零输入发现，首次仍需一次地址交换，这是密码学限制。
 - v1.2：多远程主机（`connect --name win-office`，各自注册一个 MCP）。
 - v1.3：常驻：`serve --install-service`（Windows 用 sc.exe / nssm，macOS launchd，Linux systemd user unit）。
-- v2：Safari。Safari 没有 CDP，走 `safaridriver --mcp`（Safari 27+ 自带，stdio 协议）：隧道转发远程 Mac 的 22 端口，MCP 命令变为 `ssh -p <local> user@127.0.0.1 /usr/bin/safaridriver --mcp`。
+- v2：Safari 操作用户当前已登录的标签页。safaridriver 的会话是独立 profile，Apple 若开放相关能力再跟进。
 
 ---
 
@@ -404,7 +520,17 @@ tailcat 还年轻，API 可能变。若嵌库受阻，降级方案：rchrome 首
 
 用户体验不变，只是多一个下载步骤。
 
-## 附录 C：参考
+## 附录 C：Playwright + WebKit 内核路线（不是 Safari）
+
+用户坚持要 Playwright 工具集而远程只有 Mac 时的可选路线，不进 v1 默认流程：
+
+1. 远程 Mac：`npx playwright install webkit`，然后 `npx playwright run-server --port 3000 --host 127.0.0.1`。
+2. 远程 Mac：`rchrome serve --port 3000 --no-launch`，把 3000 搬出去。
+3. 本机：`rchrome connect tc… --backend playwright-server`，注册的 MCP 命令为 `npx -y @playwright/mcp@latest --endpoint ws://127.0.0.1:3000/`。
+
+得到的是 Playwright 自带的 WebKit 内核，与 Safari 同源但不是 Safari 应用：没有它的登录态、扩展和系统集成。适合验证 WebKit 渲染，不适合「操作那台机器上的 Safari」。实现成本低，只是另一个 backend 字串，可作 v1 隐藏选项。
+
+## 附录 D：参考
 
 - tailcat 仓库与 README：https://github.com/tailscale/tailcat
 - tailcat 发布博文：https://tailscale.com/blog/tailcat
